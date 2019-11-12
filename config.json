@@ -5,30 +5,31 @@
    "optimizer": {
       "name":                          "adam",
       "lr":                            0.001,
-      "lrsched":                       "StepLR",
-      "lrsched_step_size":             2,
-      "lrsched_gamma":                 0.5
+      "step_size":                     200,
+      "decay":                         0.5
    },
    "loss": {
       "func":                          "pointnet_class_loss"
 
    },
    "data": {
-      "handler":                       "h5_file_generator",
-      "batch_size":                    20,
-      "train_glob":                    "/Users/jchilders/workdir/ml_data/atlas/h5_data/zee2jets/train/*",
-      "valid_glob":                    "/Users/jchilders/workdir/ml_data/atlas/h5_data/zee2jets/valid/*",
+      "handler":                       "csv_file_generator",
+      "batch_size":                    5,
+      "glob":                          "/Users/jchilders/zee2jets/*",
+      "train_fraction":                0.9,
       "imgs_per_file":                 1,
-      "image_shape":                   [10,10],
+      "num_points":                    15000,
+      "num_features":                  4,
       "total_images":                  1000,
       "shuffle_on_epoch":              true,
-      "classes":                       ["classA","classB"],
+      "classes":                       ["nothing","something"],
       "num_parallel_readers":          4,
       "parse_workers":                 2,
       "prefectch_buffer_size":         40
    },
    "training": {
-      "epochs":                        100
+      "epochs":                        100,
+      "status":                        1
    },
    "validation": {
       "batches":                       1

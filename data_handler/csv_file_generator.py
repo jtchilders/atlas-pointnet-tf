@@ -1,7 +1,7 @@
 import tensorflow as tf
 import time,logging,glob
 import numpy as np
-import h5py
+import pandas as pd
 logger = logging.getLogger(__name__)
 
 config = None
@@ -89,22 +89,51 @@ def load_file_and_preprocess(path):
 
 #def load_file_and_preprocess(path):
 def wrapped_loader(path):
-   
-   hf = h5py.File(path,'r')
-   images = hf['raw']
-   images = np.float32(images)
-   labels = hf['truth']
-   labels = np.int32(labels)
+   path = path.decode('utf-8')
+   col_names    = ['id', 'index', 'x', 'y', 'z', 'r', 'eta', 'phi', 'Et','pid','n','trk_good','trk_id','trk_pt']
+   col_dtype    = {'id': np.int64, 'index': np.int32, 'x': np.float32, 'y': np.float32,
+                   'z': np.float32, 'eta': np.float32, 'phi': np.float32, 'r': np.float32,
+                   'Et': np.float32, 'pid': np.float32, 'n': np.float32,
+                   'trk_good': np.float32, 'trk_id': np.float32, 'trk_pt': np.float32}
 
-   shuffle_in_unison(images,labels)
+   data = pd.read_csv(path,header=None,names=col_names, dtype=col_dtype, sep='\t')
    
-
    # could do some preprocessing here
-   return (images,labels)
+   return (get_input(data),get_labels(data))
 
 
-def shuffle_in_unison(a, b):
-    rng_state = np.random.get_state()
-    np.random.shuffle(a)
-    np.random.set_state(rng_state)
-    np.random.shuffle(b)
+def get_input(data):
+   input = data[['r','eta','phi','Et']].to_numpy()
+
+   min = input.min(0)
+   # logger.info('min = %s',min)
+   max = input.max(0)
+   # logger.info('max = %s',max)
+   input = (input - min) / (max - min)
+
+   input = np.float32(input)
+
+   # create a weight vector with 1's where points exist and 0's where they do not
+   # weights = np.zeros(self.img_shape[0],dtype=np.float32)
+   # weights[0:input.shape[0]] = np.ones(input.shape[0],dtype=np.float32)
+   img_shape = (1,config['data']['num_points'],config['data']['num_features'])
+   padded_input = np.zeros(img_shape,dtype=np.float32)
+
+   padded_input[0,:input.shape[0],:] = input
+
+   # input = padded_input.transpose()
+   
+   return padded_input
+
+
+def get_labels(data):
+   target = data['pid']
+   target = target.to_numpy()
+   target = target >= -90
+   target = np.int32(target)
+   # logger.info('target  #0 = %s #1 = %s # = %s',(target == 0).sum(),(target == 1).sum(),np.prod(target.shape))
+   #img_shape = (config['data']['num_points'])
+   padded_target = np.zeros((1,config['data']['num_points']),dtype=np.int32)
+   padded_target[0,:target.shape[0]] = target
+
+   return padded_target

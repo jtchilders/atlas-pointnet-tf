@@ -2,6 +2,8 @@
 import argparse,logging,json,time,os
 import tensorflow as tf
 import data_handler
+import numpy as np
+from models import pointnet_seg
 import horovod
 import horovod.tensorflow as hvd
 hvd.init()
@@ -10,6 +12,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG = 'config.json'
 DEFAULT_INTEROP = 1
 DEFAULT_INTRAOP = os.cpu_count()
+DEFAULT_LOGDIR = '/tmp/tf-'+str(os.getpid())
 
 
 def main():
@@ -22,6 +25,7 @@ def main():
    parser.add_argument('-c','--config',dest='config_filename',help='configuration filename in json format [default: %s]' % DEFAULT_CONFIG,default=DEFAULT_CONFIG)
    parser.add_argument('--interop',help='set Tensorflow "inter_op_parallelism_threads" session config varaible [default: %s]' % DEFAULT_INTEROP,default=DEFAULT_INTEROP)
    parser.add_argument('--intraop',help='set Tensorflow "intra_op_parallelism_threads" session config varaible [default: %s]' % DEFAULT_INTRAOP,default=DEFAULT_INTRAOP)
+   parser.add_argument('-l','--logdir',default=DEFAULT_LOGDIR,help='define location to save log information [default: %s]' % DEFAULT_LOGDIR)
 
    parser.add_argument('--debug', dest='debug', default=False, action='store_true', help="Set Logger to DEBUG")
    parser.add_argument('--error', dest='error', default=False, action='store_true', help="Set Logger to ERROR")
@@ -45,39 +49,111 @@ def main():
    logging.info('using tensorflow from:      %s',tf.__file__)
    logging.info('using horovod version:      %s',horovod.__version__)
    logging.info('using horovod from:         %s',horovod.__file__)
+   logging.info('logdir:                     %s',args.logdir)
+   logging.info('interop:                    %s',args.interop)
+   logging.info('intraop:                    %s',args.intraop)
    
    config = json.load(open(args.config_filename))
 
+   logger.info('-=-=-=-=-=-=-=-=-  CONFIG FILE -=-=-=-=-=-=-=-=-')
    logger.info('%s = \n %s',args.config_filename,json.dumps(config,indent=4,sort_keys=True))
+   logger.info('-=-=-=-=-=-=-=-=-  CONFIG FILE -=-=-=-=-=-=-=-=-')
 
-   logger.info('getting datasets')
-   trainds,validds = data_handler.get_datasets(config)
+   with tf.Graph().as_default():
 
-   logger.info('got datasets')
+      logger.info('getting datasets')
+      trainds,validds = data_handler.get_datasets(config)
 
-   train_itr = trainds.make_initializable_iterator()
-   #train_itr = trainds.make_one_shot_iterator()
-   next_train = train_itr.get_next()
+      with tf.device('/cpu:0'):  # '/gpu:' + str(hvd.local_rank())):
+         # pointclouds_pl, labels_pl = pointnet_seg.placeholder_inputs(config['data']['batch_size'],
+         #                                                             config['data']['num_points'],
+         #                                                             config['data']['num_features'])
 
-   logger.info('create session')
+         handle = tf.placeholder(tf.string,shape=[])
+         iterator = tf.data.Iterator.from_string_handle(handle,(tf.float32,tf.int32),((config['data']['batch_size'],config['data']['num_points'],config['data']['num_features']),(config['data']['batch_size'],config['data']['num_points'])))
+         input,target = iterator.get_next()
+         
+         iter_train = trainds.make_one_shot_iterator()
+         # iter_valid = validds.make_one_shot_iterator()
+         
+         is_training_pl = tf.placeholder(tf.bool, shape=())
+         batch = tf.Variable(0)
 
-   config = tf.ConfigProto()
-   config.allow_soft_placement = True
-   config.intra_op_parallelism_threads = args.intraop
-   config.inter_op_parallelism_threads = args.interop
+         nclasses = len(config['data']['classes'])
 
-   # Initialize an iterator over a dataset with 10 elements.
-   sess = tf.Session(config=config)
-   logger.info('initialize dataset iterator')
-   sess.run(train_itr.initializer)
-   logger.info('running over data')
-   for i in range(config['training']['epochs']):
-      logger.info('epoch %s of %s',i+1,config['training']['epochs'])
-      data_start = time.time()
-      value = sess.run(next_train)
-      data_end = time.time()
+         pred,endpoints = pointnet_seg.get_model(input,is_training_pl,nclasses)
+         loss = pointnet_seg.get_loss(pred,target,endpoints)
+         tf.summary.scalar('loss',loss)
 
-      logger.info('data time = %s value = %s %s',data_end - data_start,value[0].shape,value[1].shape)
+         accuracy = pointnet_seg.get_accuracy(pred,target)
+         tf.summary.scalar('accuracy', accuracy)
+
+         learning_rate = pointnet_seg.get_learning_rate(batch,config) * hvd.size()
+         tf.summary.scalar('learning_rate',learning_rate)
+         optimizer = tf.train.AdamOptimizer(learning_rate)
+         optimizer = hvd.DistributedOptimizer(optimizer)
+         train_op = optimizer.minimize(loss, global_step=batch)
+         #grads_and_vars = optimizer.compute_gradients(loss, tf.trainable_variables())
+         #train = optimizer.apply_gradients(grads_and_vars)
+
+         # Add ops to save and restore all the variables.
+         # saver = tf.train.Saver()
+
+      logger.info('create session')
+
+      config_proto = tf.ConfigProto()
+      config_proto.allow_soft_placement = True
+      config_proto.intra_op_parallelism_threads = args.intraop
+      config_proto.inter_op_parallelism_threads = args.interop
+      # config_proto.gpu_options.allow_growth = True
+      # config_proto.gpu_options.visible_device_list = str(hvd.local_rank())
+
+      # Initialize an iterator over a dataset with 10 elements.
+      sess = tf.Session(config=config_proto)
+      logger.info('initialize dataset iterator')
+
+      merged = tf.summary.merge_all()
+      train_writer = tf.summary.FileWriter(os.path.join(args.logdir, 'train'),sess.graph)
+      # test_writer = tf.summary.FileWriter(os.path.join(args.logdir, 'test'))
+
+      train_handle = sess.run(iter_train.string_handle())
+
+      init = tf.global_variables_initializer()
+      sess.run(init, {is_training_pl: True})
+
+      sess.run(hvd.broadcast_global_variables(0))
+
+      logger.info('running over data')
+      is_training = True
+      status_interval = config['training']['status']
+      total_acc = 0.
+      loss_sum = 0.
+      for epoch in range(config['training']['epochs']):
+         logger.info('epoch %s of %s  (logdir: %s)',epoch + 1,config['training']['epochs'],args.logdir)
+         
+         while True:
+            try:
+               feed_dict = {handle: train_handle,
+                            is_training_pl: is_training}
+               summary, step, _, loss_val, accuracy_val = sess.run([merged, batch,
+                   train_op, loss, accuracy], feed_dict=feed_dict)
+               train_writer.add_summary(summary, step)
+               
+               total_acc += accuracy_val
+               loss_sum += loss_val
+
+               # logger.info(f'pred_val.shape   = {pred_val.shape}')
+               # logger.info(f'target_val.shape = {target_val.shape}')
+               
+               if step % status_interval == 0:
+                  logger.info('mean loss: %10.6f   accuracy:  %10.6f',loss_sum / float(status_interval),total_acc / float(status_interval))
+
+                  total_acc = 0.
+                  loss_sum = 0.
+            except tf.errors.OutOfRangeError:
+               logger.info(' end of epoch ')
+               break
+
 
 
 
