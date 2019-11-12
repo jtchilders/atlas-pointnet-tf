@@ -14,6 +14,7 @@ DEFAULT_INTEROP = 1
 DEFAULT_INTRAOP = os.cpu_count()
 DEFAULT_LOGDIR = '/tmp/tf-'+str(os.getpid())
 
+tf.debugging.set_log_device_placement(True)
 
 def main():
    ''' simple starter program for tensorflow models. '''
@@ -53,8 +54,14 @@ def main():
    logging.info('interop:                    %s',args.interop)
    logging.info('intraop:                    %s',args.intraop)
    
-   config = json.load(open(args.config_filename))
+   device_str = '/cpu:0'
+   if tf.test.is_gpu_available():
+      device_str = '/gpu:' + str(hvd.local_rank())
+   logger.info('device:                     %s',device_str)
 
+   config = json.load(open(args.config_filename))
+   config['device'] = device_str
+   
    logger.info('-=-=-=-=-=-=-=-=-  CONFIG FILE -=-=-=-=-=-=-=-=-')
    logger.info('%s = \n %s',args.config_filename,json.dumps(config,indent=4,sort_keys=True))
    logger.info('-=-=-=-=-=-=-=-=-  CONFIG FILE -=-=-=-=-=-=-=-=-')
@@ -64,33 +71,38 @@ def main():
       logger.info('getting datasets')
       trainds,validds = data_handler.get_datasets(config)
 
-      with tf.device('/cpu:0'):  # '/gpu:' + str(hvd.local_rank())):
-         # pointclouds_pl, labels_pl = pointnet_seg.placeholder_inputs(config['data']['batch_size'],
-         #                                                             config['data']['num_points'],
-         #                                                             config['data']['num_features'])
+      iterator = tf.compat.v1.data.Iterator.from_structure((tf.float32,tf.int32),((config['data']['batch_size'],config['data']['num_points'],config['data']['num_features']),(config['data']['batch_size'],config['data']['num_points'])))
+      input,target = iterator.get_next()
+      training_init_op = iterator.make_initializer(trainds)
 
-         handle = tf.placeholder(tf.string,shape=[])
-         iterator = tf.data.Iterator.from_string_handle(handle,(tf.float32,tf.int32),((config['data']['batch_size'],config['data']['num_points'],config['data']['num_features']),(config['data']['batch_size'],config['data']['num_points'])))
-         input,target = iterator.get_next()
+      with tf.device(device_str):
          
-         iter_train = trainds.make_one_shot_iterator()
+         # input, target = pointnet_seg.placeholder_inputs(config['data']['batch_size'],
+         #                                                 config['data']['num_points'],
+         #                                                 config['data']['num_features'])
+
+         # handle = tf.compat.v1.placeholder(tf.string,shape=[])
+         # iterator = tf.compat.v1.data.Iterator.from_string_handle(handle,(tf.float32,tf.int32),((config['data']['batch_size'],config['data']['num_points'],config['data']['num_features']),(config['data']['batch_size'],config['data']['num_points'])))
+         # input,target = iterator.get_next()
+
+         # iter_train = trainds.make_one_shot_iterator()
          # iter_valid = validds.make_one_shot_iterator()
          
-         is_training_pl = tf.placeholder(tf.bool, shape=())
+         is_training_pl = tf.compat.v1.placeholder(tf.bool, shape=())
          batch = tf.Variable(0)
 
          nclasses = len(config['data']['classes'])
 
          pred,endpoints = pointnet_seg.get_model(input,is_training_pl,nclasses)
          loss = pointnet_seg.get_loss(pred,target,endpoints)
-         tf.summary.scalar('loss',loss)
+         tf.compat.v1.summary.scalar('loss',loss)
 
          accuracy = pointnet_seg.get_accuracy(pred,target)
-         tf.summary.scalar('accuracy', accuracy)
+         tf.compat.v1.summary.scalar('accuracy', accuracy)
 
          learning_rate = pointnet_seg.get_learning_rate(batch,config) * hvd.size()
-         tf.summary.scalar('learning_rate',learning_rate)
-         optimizer = tf.train.AdamOptimizer(learning_rate)
+         tf.compat.v1.summary.scalar('learning_rate',learning_rate)
+         optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate)
          optimizer = hvd.DistributedOptimizer(optimizer)
          train_op = optimizer.minimize(loss, global_step=batch)
          #grads_and_vars = optimizer.compute_gradients(loss, tf.trainable_variables())
@@ -99,28 +111,30 @@ def main():
          # Add ops to save and restore all the variables.
          # saver = tf.train.Saver()
 
+         merged = tf.compat.v1.summary.merge_all()
+
       logger.info('create session')
 
-      config_proto = tf.ConfigProto()
+      config_proto = tf.compat.v1.ConfigProto()
       config_proto.allow_soft_placement = True
       config_proto.intra_op_parallelism_threads = args.intraop
       config_proto.inter_op_parallelism_threads = args.interop
-      # config_proto.gpu_options.allow_growth = True
-      # config_proto.gpu_options.visible_device_list = str(hvd.local_rank())
+      if 'gpu' in device_str:
+         config_proto.gpu_options.allow_growth = True
+         config_proto.gpu_options.visible_device_list = str(hvd.local_rank())
 
       # Initialize an iterator over a dataset with 10 elements.
-      sess = tf.Session(config=config_proto)
+      sess = tf.compat.v1.Session(config=config_proto)
       logger.info('initialize dataset iterator')
 
-      merged = tf.summary.merge_all()
-      train_writer = tf.summary.FileWriter(os.path.join(args.logdir, 'train'),sess.graph)
+      train_writer = tf.compat.v1.summary.FileWriter(os.path.join(args.logdir, 'train'),sess.graph)
       # test_writer = tf.summary.FileWriter(os.path.join(args.logdir, 'test'))
-
-      train_handle = sess.run(iter_train.string_handle())
-
-      init = tf.global_variables_initializer()
+      with tf.device(device_str):
+         sess.run(training_init_op)
+      #    train_handle = sess.run(iter_train.string_handle())
+      
+      init = tf.compat.v1.global_variables_initializer()
       sess.run(init, {is_training_pl: True})
-
       sess.run(hvd.broadcast_global_variables(0))
 
       logger.info('running over data')
@@ -133,8 +147,7 @@ def main():
          
          while True:
             try:
-               feed_dict = {handle: train_handle,
-                            is_training_pl: is_training}
+               feed_dict = {is_training_pl: is_training}
                summary, step, _, loss_val, accuracy_val = sess.run([merged, batch,
                    train_op, loss, accuracy], feed_dict=feed_dict)
                train_writer.add_summary(summary, step)

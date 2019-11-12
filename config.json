@@ -14,8 +14,8 @@
    },
    "data": {
       "handler":                       "csv_file_generator",
-      "batch_size":                    5,
-      "glob":                          "/Users/jchilders/zee2jets/*",
+      "batch_size":                    10,
+      "glob":                          "/gpfs/jlse-fs0/projects/datascience/parton/data/atlas/csv/zee2jets/*2l_2j.csv",
       "train_fraction":                0.9,
       "imgs_per_file":                 1,
       "num_points":                    15000,
@@ -29,7 +29,7 @@
    },
    "training": {
       "epochs":                        100,
-      "status":                        1
+      "status":                        5
    },
    "validation": {
       "batches":                       1

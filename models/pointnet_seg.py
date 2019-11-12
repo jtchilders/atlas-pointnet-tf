@@ -1,5 +1,5 @@
 import tensorflow as tf
-import numpy as np
+import numpy as np,sys
 import models.tf_util as tf_util
 from models.transform_nets import input_transform_net, feature_transform_net
 import logging
@@ -7,10 +7,10 @@ logger = logging.getLogger(__name__)
 
 
 def placeholder_inputs(batch_size, num_point, feature_size):
-    pointclouds_pl = tf.placeholder(tf.float32,
-                                    shape=(batch_size, num_point, feature_size))
-    labels_pl = tf.placeholder(tf.int32,
-                               shape=(batch_size, num_point))
+    pointclouds_pl =  tf.compat.v1.placeholder(tf.float32,
+                              shape=(batch_size, num_point, feature_size))
+    labels_pl =  tf.compat.v1.placeholder(tf.int32,
+                              shape=(batch_size, num_point))
     return pointclouds_pl, labels_pl
 
 
@@ -25,7 +25,7 @@ def get_model(point_cloud, is_training, classes, bn_decay=None):
     features = point_cloud.get_shape()[2].value
     end_points = {}
 
-    with tf.variable_scope('transform_net1'):
+    with tf.compat.v1.variable_scope('transform_net1'):
         transform = input_transform_net(point_cloud, is_training, bn_decay, K=features)
     point_cloud_transformed = tf.matmul(point_cloud, transform)
     input_image = tf.expand_dims(point_cloud_transformed, -1)
@@ -39,7 +39,7 @@ def get_model(point_cloud, is_training, classes, bn_decay=None):
                          bn=True, is_training=is_training,
                          scope='conv2', bn_decay=bn_decay)
 
-    with tf.variable_scope('transform_net2'):
+    with tf.compat.v1.variable_scope('transform_net2'):
         transform = feature_transform_net(net, is_training, bn_decay, K=64)
     end_points['transform'] = transform
     net_transformed = tf.matmul(tf.squeeze(net, axis=[2]), transform)
@@ -97,7 +97,7 @@ def get_loss(pred, label, end_points, reg_weight=0.001):
         label: BxN, """
     loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=pred, labels=label)
     classify_loss = tf.reduce_mean(loss)
-    tf.summary.scalar('classify loss', classify_loss)
+    tf.compat.v1.summary.scalar('classify_loss', classify_loss)
 
     # Enforce the transformation as orthogonal matrix
     transform = end_points['transform']  # BxKxK
@@ -105,30 +105,31 @@ def get_loss(pred, label, end_points, reg_weight=0.001):
     mat_diff = tf.matmul(transform, tf.transpose(transform, perm=[0,2,1]))
     mat_diff -= tf.constant(np.eye(K), dtype=tf.float32)
     mat_diff_loss = tf.nn.l2_loss(mat_diff)
-    tf.summary.scalar('mat_loss', mat_diff_loss)
+    tf.compat.v1.summary.scalar('mat_loss', mat_diff_loss)
 
     return classify_loss + mat_diff_loss * reg_weight
 
 
 def get_accuracy(pred,label,classes=2):
 
+   pred = tf.nn.softmax(pred)
    label_onehot = tf.one_hot(label,classes,axis=-1)
    return IoU_coeff(pred,label_onehot)
 
 
 def IoU_coeff(pred,label,smooth=1,point_axis=1):
    intersection = tf.math.reduce_sum(tf.abs(label * pred),axis=point_axis)  # BxC
-   # logger.info(' intersection = %s ',intersection)
+   # tf.print(intersection,output_stream=sys.stderr)
    union = tf.math.reduce_sum(label,axis=point_axis) + tf.math.reduce_sum(pred,axis=point_axis) - intersection
-   # logger.info(' union = %s ',union)
-   iou = tf.math.reduce_sum((intersection + smooth) / (union + smooth), axis=0)
+   # tf.print(union,output_stream=sys.stderr)
+   iou = tf.math.reduce_mean((intersection + smooth) / (union + smooth), axis=0)
    for i in range(iou.get_shape()[0].value):
-      tf.summary.scalar('class_acc_%i' % i,iou[i])
-   return tf.math.reduce_sum(iou)
+      tf.compat.v1.summary.scalar('class_acc_%i' % i,iou[i])
+   return tf.math.reduce_mean(iou)
 
 
 def get_learning_rate(batch,config):
-    learning_rate = tf.train.exponential_decay(
+    learning_rate = tf.compat.v1.train.exponential_decay(
                         config['optimizer']['lr'],  # Base learning rate.
                         batch * config['data']['batch_size'],  # Current index into the dataset.
                         config['optimizer']['step_size'],          # Decay step.

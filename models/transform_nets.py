@@ -33,15 +33,15 @@ def input_transform_net(point_cloud, is_training, bn_decay=None, K=3):
     net = tf_util.fully_connected(net, 256, bn=True, is_training=is_training,
                                   scope='tfc2', bn_decay=bn_decay)
 
-    with tf.variable_scope('transform_XYZ'):
+    with tf.compat.v1.variable_scope('transform_XYZ'):
         assert K == num_feature,f'K={K}  num_feature={num_feature}'
-        weights = tf.get_variable('weights', [256, K * K],
+        weights = tf.compat.v1.get_variable('weights', [256, K * K],
                                   initializer=tf.constant_initializer(0.0),
                                   dtype=tf.float32)
-        biases = tf.get_variable('biases', [K * K],
+        biases = tf.compat.v1.get_variable('biases', [K * K],
                                  initializer=tf.constant_initializer(0.0),
                                  dtype=tf.float32)
-        biases += tf.constant(np.eye(K).flatten(), dtype=tf.float32)
+        biases = biases + tf.constant(np.eye(K).flatten(), dtype=tf.float32)
         transform = tf.matmul(net, weights)
         transform = tf.nn.bias_add(transform, biases)
 
@@ -78,14 +78,14 @@ def feature_transform_net(inputs, is_training, bn_decay=None, K=64):
     net = tf_util.fully_connected(net, 256, bn=True, is_training=is_training,
                                   scope='tfc2', bn_decay=bn_decay)
 
-    with tf.variable_scope('transform_feat') as sc:
-        weights = tf.get_variable('weights', [256, K*K],
+    with tf.compat.v1.variable_scope('transform_feat') as sc:
+        weights = tf.compat.v1.get_variable('weights', [256, K * K],
                                   initializer=tf.constant_initializer(0.0),
                                   dtype=tf.float32)
-        biases = tf.get_variable('biases', [K*K],
+        biases = tf.compat.v1.get_variable('biases', [K * K],
                                  initializer=tf.constant_initializer(0.0),
                                  dtype=tf.float32)
-        biases += tf.constant(np.eye(K).flatten(), dtype=tf.float32)
+        biases = biases + tf.constant(np.eye(K).flatten(), dtype=tf.float32)
         transform = tf.matmul(net, weights)
         transform = tf.nn.bias_add(transform, biases)
 

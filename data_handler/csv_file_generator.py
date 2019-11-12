@@ -29,7 +29,8 @@ def simple_dataset_from_glob(glob_string):
    # glob for the input files
    filelist = tf.data.Dataset.list_files(glob_string)
    # shuffle and repeat at the input file level
-   filelist = filelist.apply(tf.contrib.data.shuffle_and_repeat(buffer_size=10000,count=config['training']['epochs']))
+   filelist = filelist.shuffle(10000)
+   # filelist = filelist.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=10000,count=config['training']['epochs']))
    # map to read files in parallel
    ds = filelist.map(load_file_and_preprocess,num_parallel_calls=config['data']['num_parallel_readers'])
    
@@ -48,9 +49,10 @@ def simple_dataset_from_glob(glob_string):
 def simple_dataset_from_filelist(filelist):
 
    # glob for the input files
-   filelist = tf.data.Dataset.from_tensor_slices(filelist)
+   filelist = tf.data.Dataset.from_tensor_slices(np.array(filelist))
    # shuffle and repeat at the input file level
-   filelist = filelist.apply(tf.contrib.data.shuffle_and_repeat(buffer_size=10000,count=config['training']['epochs']))
+   filelist = filelist.shuffle(10000)
+   # filelist = filelist.apply(tf.data.experimental.shuffle_and_repeat(buffer_size=10000,count=config['training']['epochs']))
    # map to read files in parallel
    ds = filelist.map(load_file_and_preprocess,num_parallel_calls=config['data']['num_parallel_readers'])
    
@@ -83,13 +85,13 @@ def split_filelists(glob_str,train_fraction):
 
 
 def load_file_and_preprocess(path):
-   pyf = tf.py_func(wrapped_loader,[path],(tf.float32,tf.int32))
+   pyf = tf.py_function(wrapped_loader,[path],(tf.float32,tf.int32))
    return pyf
 
 
 #def load_file_and_preprocess(path):
 def wrapped_loader(path):
-   path = path.decode('utf-8')
+   path = path.numpy().decode('utf-8')
    col_names    = ['id', 'index', 'x', 'y', 'z', 'r', 'eta', 'phi', 'Et','pid','n','trk_good','trk_id','trk_pt']
    col_dtype    = {'id': np.int64, 'index': np.int32, 'x': np.float32, 'y': np.float32,
                    'z': np.float32, 'eta': np.float32, 'phi': np.float32, 'r': np.float32,
