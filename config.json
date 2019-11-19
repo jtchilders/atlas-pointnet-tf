@@ -4,9 +4,12 @@
    },
    "optimizer": {
       "name":                          "adam",
-      "lr":                            0.001,
-      "step_size":                     200,
-      "decay":                         0.5
+      "lr":                            0.0001,
+      "max_lr":                        0.01,
+      "step_size":                     5000,
+      "decay":                         0.99994,
+      "mode":                          "triangle2",
+      "lr_min":                        0.0000001
    },
    "loss": {
       "func":                          "pointnet_class_loss"
@@ -22,7 +25,7 @@
       "num_features":                  4,
       "total_images":                  1000,
       "shuffle_on_epoch":              true,
-      "classes":                       ["nothing","something"],
+      "classes":                       ["nothing","jet","electron"],
       "num_parallel_readers":          4,
       "parse_workers":                 2,
       "prefectch_buffer_size":         40

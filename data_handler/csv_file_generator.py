@@ -38,7 +38,10 @@ def simple_dataset_from_glob(glob_string):
    ds = ds.flat_map(lambda *x: tf.data.Dataset.from_tensor_slices(x))
    
    # speficy batch size
-   ds = ds.batch(config['data']['batch_size'])
+   ds = ds.batch(config['data']['batch_size'],drop_remainder=True)
+
+   # shard the data
+   ds = ds.shard(config['hvd'].size(),config['hvd'].rank())
    
    # how many inputs to prefetch to improve pipeline performance
    ds = ds.prefetch(buffer_size=config['data']['prefectch_buffer_size'])
@@ -60,7 +63,10 @@ def simple_dataset_from_filelist(filelist):
    ds = ds.flat_map(lambda *x: tf.data.Dataset.from_tensor_slices(x))
    
    # speficy batch size
-   ds = ds.batch(config['data']['batch_size'])
+   ds = ds.batch(config['data']['batch_size'],drop_remainder=True)
+
+   # shard the data
+   ds = ds.shard(config['hvd'].size(),config['hvd'].rank())
    
    # how many inputs to prefetch to improve pipeline performance
    ds = ds.prefetch(buffer_size=config['data']['prefectch_buffer_size'])
@@ -80,6 +86,8 @@ def split_filelists(glob_str,train_fraction):
 
    train_filelist = full_filelist[:ntrain]
    valid_filelist = full_filelist[ntrain:]
+
+   logger.info('number train: %s  number valid: %s',len(train_filelist),len(valid_filelist))
 
    return train_filelist,valid_filelist
 
@@ -129,6 +137,22 @@ def get_input(data):
 
 
 def get_labels(data):
+   return get_labels_jet_e(data)
+
+
+def get_labels_jet_e(data):
+   target = data['pid']
+   map_pid = {-99:0,-11:2,11:2,0:1}
+   target = target.map(map_pid)
+   target = np.int32(target.to_numpy())
+
+   padded_target = np.zeros((1,config['data']['num_points']),dtype=np.int32)
+   padded_target[0,:target.shape[0]] = target
+
+   return padded_target
+
+
+def get_labels_something_nothing(data):
    target = data['pid']
    target = target.to_numpy()
    target = target >= -90
