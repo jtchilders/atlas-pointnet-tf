@@ -87,7 +87,7 @@ def split_filelists(glob_str,train_fraction):
    train_filelist = full_filelist[:ntrain]
    valid_filelist = full_filelist[ntrain:]
 
-   logger.info('number train: %s  number valid: %s',len(train_filelist),len(valid_filelist))
+   logger.info('number train steps: %s number valid steps: %s',len(train_filelist)/config['data']['batch_size']/config['hvd'].size(),len(valid_filelist)/config['data']['batch_size']/config['hvd'].size())
 
    return train_filelist,valid_filelist
 
