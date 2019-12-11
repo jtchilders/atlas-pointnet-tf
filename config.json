@@ -4,11 +4,12 @@
    },
    "optimizer": {
       "name":                          "adam",
-      "lr":                            0.0001,
+      "lr":                            0.00000001,
       "max_lr":                        0.01,
       "step_size":                     5000,
-      "decay":                         0.99994,
-      "mode":                          "triangle2",
+      "decay":                         0.97,
+      "divider":                       1.1,
+      "mode":                          "triangular2",
       "lr_min":                        0.0000001
    },
    "loss": {
