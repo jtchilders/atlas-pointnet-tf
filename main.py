@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import argparse,logging,json,os
+import argparse,logging,json,os,time
 os.environ['TF_CPP_MIN_VLOG_LEVEL'] = '3'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import tensorflow as tf
@@ -39,6 +39,8 @@ def main():
    parser.add_argument('--intraop',help='set Tensorflow "intra_op_parallelism_threads" session config varaible [default: %s]' % DEFAULT_INTRAOP,default=DEFAULT_INTRAOP)
    parser.add_argument('-l','--logdir',default=DEFAULT_LOGDIR,help='define location to save log information [default: %s]' % DEFAULT_LOGDIR)
 
+   parser.add_argument('-r','--restore',help='define location from which to load a saved model')
+
    parser.add_argument('--debug', dest='debug', default=False, action='store_true', help="Set Logger to DEBUG")
    parser.add_argument('--error', dest='error', default=False, action='store_true', help="Set Logger to ERROR")
    parser.add_argument('--warning', dest='warning', default=False, action='store_true', help="Set Logger to ERROR")
@@ -69,6 +71,7 @@ def main():
    logging.info('logdir:                     %s',args.logdir)
    logging.info('interop:                    %s',args.interop)
    logging.info('intraop:                    %s',args.intraop)
+   logging.info('restore:                    %s',args.restore)
    
    device_str = '/CPU:0'
    if tf.test.is_gpu_available():
@@ -97,6 +100,7 @@ def main():
       iterator = tf.compat.v1.data.Iterator.from_structure((tf.float32,tf.int32),((config['data']['batch_size'],config['data']['num_points'],config['data']['num_features']),(config['data']['batch_size'],config['data']['num_points'])))
       input,target = iterator.get_next()
       training_init_op = iterator.make_initializer(trainds)
+      validation_init_op = iterator.make_initializer(validds)
 
       with tf.device(device_str):
          
@@ -120,6 +124,7 @@ def main():
          loss = pointnet_seg.get_loss(pred,target,endpoints)
          tf.compat.v1.summary.scalar('loss/combined',loss)
 
+         #accuracy = hvd.allreduce(pointnet_seg.get_accuracy(pred,target))
          accuracy = pointnet_seg.get_accuracy(pred,target)
          tf.compat.v1.summary.scalar('accuracy/combined', accuracy)
 
@@ -150,29 +155,33 @@ def main():
 
       # Initialize an iterator over a dataset with 10 elements.
       sess = tf.compat.v1.Session(config=config_proto)
-      logger.info('initialize dataset iterator')
-
+      
       if hvd.rank() == 0:
          train_writer = tf.compat.v1.summary.FileWriter(os.path.join(args.logdir, 'train'),sess.graph)
-      # test_writer = tf.summary.FileWriter(os.path.join(args.logdir, 'test'))
+         valid_writer  = tf.compat.v1.summary.FileWriter(os.path.join(args.logdir, 'valid'),sess.graph)
          
       #    train_handle = sess.run(iter_train.string_handle())
-      
-      init = tf.compat.v1.global_variables_initializer()
-      sess.run(init, {is_training_pl: True})
+      if args.restore:
+         logger.info('restoring model: %s',args.restore)
+         saver.restore(sess,args.restore)
+      else:
+         init = tf.compat.v1.global_variables_initializer()
+         sess.run(init, {is_training_pl: True})
       sess.run(hvd.broadcast_global_variables(0))
 
       logger.info('running over data')
-      is_training = True
       status_interval = config['training']['status']
       total_acc = 0.
       loss_sum = 0.
       for epoch in range(config['training']['epochs']):
          logger.info('epoch %s of %s  (logdir: %s)',epoch + 1,config['training']['epochs'],args.logdir)
          sess.run(training_init_op)
+         
+         start = time.time()
          while True:
+
             try:
-               feed_dict = {is_training_pl: is_training}
+               feed_dict = {is_training_pl: True}
                summary, step, _, loss_val, accuracy_val = sess.run([merged, batch,
                    train_op, loss, accuracy], feed_dict=feed_dict)
                
@@ -186,14 +195,44 @@ def main():
                # logger.info(f'target_val.shape = {target_val.shape}')
                
                if step % status_interval == 0:
-                  logger.info('step: %10d   mean loss: %10.6f   accuracy:  %10.6f',step,loss_sum / float(status_interval),total_acc / float(status_interval))
-
+                  end = time.time()
+                  duration = end - start
+                  logger.info('step: %10d   mean loss: %10.6f   accuracy:  %10.6f  imgs/sec: %10.6f',
+                              step,
+                              loss_sum / float(status_interval),total_acc / float(status_interval),
+                              float(status_interval) * config['data']['batch_size'] / duration)
+                  start = time.time()
                   total_acc = 0.
                   loss_sum = 0.
             except tf.errors.OutOfRangeError:
-               logger.info(' end of epoch ')
-               saver.save(sess, os.path.join(args.logdir, "model.ckpt"))
+               ss = saver.save(sess, os.path.join(args.logdir, "model.ckpt"),global_step=step)
+
+               logger.info(' end of epoch: %s',ss)
                break
+
+         sess.run(validation_init_op)
+         logger.info('running validation')
+         total_acc = 0.
+         total_loss = 0.
+         steps = 0.
+         while True:
+            try:
+               feed_dict = {is_training_pl: False}
+               summary, valid_step, loss_val, accuracy_val = sess.run([merged, batch, loss, accuracy], feed_dict=feed_dict)
+               total_acc += accuracy_val
+               total_loss += loss_val
+               steps += 1.
+               logger.info('valid step: %s',valid_step)
+               if hvd.rank() == 0:
+                  valid_writer.add_summary(summary, valid_step)
+            except tf.errors.OutOfRangeError:
+               total_loss = total_loss / steps
+               total_acc = total_acc / steps
+               logger.info(' end of validation  mean loss: %10.6f  mean acc: %10.6f',total_loss,total_acc)
+
+               break
+            
+         
 
 
 
