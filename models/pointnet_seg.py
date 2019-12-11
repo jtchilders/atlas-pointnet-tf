@@ -289,6 +289,7 @@ def cyclic_learning_rate(global_step,config):
    step_size      = config['optimizer']['step_size']
    gamma          = config['optimizer']['decay']
    mode           = config['optimizer']['mode']
+   divider        = config['optimizer']['divider']
    name           = None
    if global_step is None:
       raise ValueError("global_step is required for cyclic_learning_rate.")
@@ -315,8 +316,8 @@ def cyclic_learning_rate(global_step,config):
          a2 = math_ops.subtract(max_lr, learning_rate)
          clr = math_ops.multiply(a1, a2)
          if mode == 'triangular2':
-            clr = math_ops.divide(clr, math_ops.cast(math_ops.pow(2, math_ops.cast(
-                                  cycle - 1, tf.int32)), tf.float32))
+            clr = math_ops.divide(clr, math_ops.cast(math_ops.pow(divider, math_ops.cast(
+                                  cycle - 1, tf.float32)), tf.float32))
          if mode == 'exp_range':
             clr = math_ops.multiply(math_ops.pow(gamma, global_step), clr)
          return math_ops.add(clr, learning_rate, name=name)
