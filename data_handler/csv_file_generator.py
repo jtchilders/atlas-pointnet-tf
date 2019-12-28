@@ -41,7 +41,8 @@ def simple_dataset_from_glob(glob_string):
    ds = ds.batch(config['data']['batch_size'],drop_remainder=True)
 
    # shard the data
-   ds = ds.shard(config['hvd'].size(),config['hvd'].rank())
+   if 'drivers' in config:
+      ds = ds.shard(config['hvd'].size(),config['hvd'].rank())
    
    # how many inputs to prefetch to improve pipeline performance
    ds = ds.prefetch(buffer_size=config['data']['prefectch_buffer_size'])
@@ -66,7 +67,8 @@ def simple_dataset_from_filelist(filelist):
    ds = ds.batch(config['data']['batch_size'],drop_remainder=True)
 
    # shard the data
-   ds = ds.shard(config['hvd'].size(),config['hvd'].rank())
+   if 'hvd' in config:
+      ds = ds.shard(config['hvd'].size(),config['hvd'].rank())
    
    # how many inputs to prefetch to improve pipeline performance
    ds = ds.prefetch(buffer_size=config['data']['prefectch_buffer_size'])
@@ -87,17 +89,17 @@ def split_filelists(glob_str,train_fraction):
    train_filelist = full_filelist[:ntrain]
    valid_filelist = full_filelist[ntrain:]
 
-   logger.info('number train steps: %s number valid steps: %s',len(train_filelist)/config['data']['batch_size']/config['hvd'].size(),len(valid_filelist)/config['data']['batch_size']/config['hvd'].size())
+   logger.info('number train steps: %s number valid steps: %s',len(train_filelist)/config['data']['batch_size']/config['nranks'],len(valid_filelist)/config['data']['batch_size']/config['nranks'])
 
    return train_filelist,valid_filelist
 
 
 def load_file_and_preprocess(path):
-   pyf = tf.py_function(wrapped_loader,[path],(tf.float32,tf.int32))
+   shape = (tf.float16,tf.int16) if config['float16'] else (tf.float32,tf.int32)
+   pyf = tf.py_function(wrapped_loader,[path],shape)
    return pyf
 
 
-#def load_file_and_preprocess(path):
 def wrapped_loader(path):
    path = path.numpy().decode('utf-8')
    col_names    = ['id', 'index', 'x', 'y', 'z', 'r', 'eta', 'phi', 'Et','pid','n','trk_good','trk_id','trk_pt']
@@ -121,13 +123,19 @@ def get_input(data):
    # logger.info('max = %s',max)
    input = (input - min) / (max - min)
 
-   input = np.float32(input)
+   if config['float16']:
+      input = np.float16(input)
+   else:
+      input = np.float32(input)
 
    # create a weight vector with 1's where points exist and 0's where they do not
    # weights = np.zeros(self.img_shape[0],dtype=np.float32)
    # weights[0:input.shape[0]] = np.ones(input.shape[0],dtype=np.float32)
    img_shape = (1,config['data']['num_points'],config['data']['num_features'])
-   padded_input = np.zeros(img_shape,dtype=np.float32)
+   if config['float16']:
+      padded_input = np.zeros(img_shape,dtype=np.float16)
+   else:
+      padded_input = np.zeros(img_shape, dtype=np.float32)
 
    padded_input[0,:input.shape[0],:] = input
 
@@ -144,9 +152,12 @@ def get_labels_jet_e(data):
    target = data['pid']
    map_pid = {-99:0,-11:2,11:2,0:1}
    target = target.map(map_pid)
-   target = np.int32(target.to_numpy())
-
-   padded_target = np.zeros((1,config['data']['num_points']),dtype=np.int32)
+   if config['float16']:
+      target = np.int16(target.to_numpy())
+      padded_target = np.zeros((1,config['data']['num_points']),dtype=np.int16)
+   else:
+      target = np.int32(target.to_numpy())
+      padded_target = np.zeros((1,config['data']['num_points']),dtype=np.int32)
    padded_target[0,:target.shape[0]] = target
 
    return padded_target

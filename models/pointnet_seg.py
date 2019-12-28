@@ -20,7 +20,7 @@ def placeholder_inputs(batch_size, num_point, feature_size):
     return pointclouds_pl, labels_pl
 
 
-def get_model(point_cloud, is_training, classes, bn_decay=None):
+def get_model(point_cloud, is_training, classes, dtype=tf.float32, bn=True, bn_decay=None):
     """ Classification PointNet, input is BxNxF, output BxNxC
         B = number of images per batch
         N = number of points
@@ -34,21 +34,23 @@ def get_model(point_cloud, is_training, classes, bn_decay=None):
     end_points = {}
 
     with tf.compat.v1.variable_scope('transform_net1'):
-        transform = input_transform_net(point_cloud, is_training, bn_decay, K=features)
+        transform = input_transform_net(point_cloud, is_training, bn_decay, K=features,dtype=dtype)
     point_cloud_transformed = tf.matmul(point_cloud, transform)
     input_image = tf.expand_dims(point_cloud_transformed, -1)
 
     net = tf_util.conv2d(input_image, 64, [1,features],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv1', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv1', bn_decay=bn_decay,
+                         dtype=dtype)
     net = tf_util.conv2d(net, 64, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv2', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv2', bn_decay=bn_decay,
+                         dtype=dtype)
 
     with tf.compat.v1.variable_scope('transform_net2'):
-        transform = feature_transform_net(net, is_training, bn_decay, K=64)
+        transform = feature_transform_net(net, is_training, bn_decay, K=64, dtype=dtype)
     end_points['transform'] = transform
     net_transformed = tf.matmul(tf.squeeze(net, axis=[2]), transform)
     point_feat = tf.expand_dims(net_transformed, [2])
@@ -56,16 +58,19 @@ def get_model(point_cloud, is_training, classes, bn_decay=None):
 
     net = tf_util.conv2d(point_feat, 64, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv3', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv3', bn_decay=bn_decay,
+                         dtype=dtype)
     net = tf_util.conv2d(net, 128, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv4', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv4', bn_decay=bn_decay,
+                         dtype=dtype)
     net = tf_util.conv2d(net, 1024, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv5', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv5', bn_decay=bn_decay,
+                         dtype=dtype)
     global_feat = tf_util.max_pool2d(net, [num_point,1],
                                      padding='VALID', scope='maxpool')
     logger.info('global_feat = %s',global_feat)
@@ -76,33 +81,38 @@ def get_model(point_cloud, is_training, classes, bn_decay=None):
 
     net = tf_util.conv2d(concat_feat, 512, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv6', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv6', bn_decay=bn_decay,
+                         dtype=dtype)
     net = tf_util.conv2d(net, 256, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv7', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv7', bn_decay=bn_decay,
+                         dtype=dtype)
     net = tf_util.conv2d(net, 128, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv8', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv8', bn_decay=bn_decay,
+                         dtype=dtype)
     net = tf_util.conv2d(net, 128, [1,1],
                          padding='VALID', stride=[1,1],
-                         bn=True, is_training=is_training,
-                         scope='conv9', bn_decay=bn_decay)
+                         bn=bn, is_training=is_training,
+                         scope='conv9', bn_decay=bn_decay,
+                         dtype=dtype)
 
     net = tf_util.conv2d(net, classes, [1,1],
                          padding='VALID', stride=[1,1], activation_fn=None,
-                         scope='conv10')
+                         scope='conv10',
+                         dtype=dtype)
     net = tf.squeeze(net, [2])  # BxNxC
     logger.info('net = %s',net)
 
     return net, end_points
 
 
-def get_loss(pred, label, end_points, reg_weight=0.001,gamma=2):
+def get_loss(pred, label, end_points, dtype=tf.float32, reg_weight=0.001,gamma=2):
 
-   return focal_loss_softmax(pred,label,end_points,gamma)
+   return focal_loss_softmax(pred,label,end_points,gamma,dtype=dtype)
 
 
 def get_loss_orig(pred, label, end_points, reg_weight=0.001):
@@ -143,7 +153,7 @@ def get_loss_sampling(pred,label, end_points, reg_weight=0.001):
    return tf.reduce_mean(loss_value)
 
 
-def focal_loss_softmax(pred,label,end_points,gamma=2):
+def focal_loss_softmax(pred,label,end_points,gamma=2,dtype=tf.float32):
     """
     https://github.com/fudannlp16/focal-loss/blob/master/focal_loss.py
     Computer focal loss for multi classification
@@ -155,7 +165,7 @@ def focal_loss_softmax(pred,label,end_points,gamma=2):
       A tensor of the same shape as `lables`
     """
     y_pred = tf.nn.softmax(pred,dim=-1)  # [batch_size,points,num_classes]
-    label = tf.one_hot(label,depth=y_pred.shape[2])  # [batch_size,points,num_classes]
+    label = tf.one_hot(tf.cast(label,tf.int32),depth=y_pred.shape[2],dtype=dtype)  # [batch_size,points,num_classes]
     L = -label * ((1 - y_pred) ** gamma) * tf.log(y_pred)  # [batch_size,points,num_classes]
     L = tf.reduce_sum(L,axis=[1,2])  # [batch_size]
     return tf.reduce_mean(L)
@@ -175,13 +185,13 @@ def np_sample_mask(nothing_mask,nsample):
    return new_mask
 
 
-def get_accuracy(pred,label):
+def get_accuracy(pred,label,dtype=tf.float32):
 
    # pred shape [batch,points,classes]
    # label shape [batch,points]
 
    pred = tf.nn.softmax(pred)
-   label_onehot = tf.one_hot(label,num_classes,axis=-1)
+   label_onehot = tf.one_hot(tf.cast(label,tf.int32),num_classes,axis=-1,dtype=dtype)
    return IoU_coeff(pred,label_onehot)
 
 
